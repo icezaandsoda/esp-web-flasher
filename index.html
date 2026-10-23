@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP Web Flasher By Tool</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
+        .card { border: 1px solid #ccc; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box; }
+        button { background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #statusLog { background: #222; color: #0f0; padding: 15px; border-radius: 4px; height: 150px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+    <h2>⚡ Web ESP32/ESP8266 Flasher</h2>
+    <div class="card">
+        <!-- 1. เลือกไฟล์เฟิร์มแวร์ -->
+        <div class="form-group">
+            <label for="firmwareFile">1. เลือกไฟล์เฟิร์มแวร์ (.bin):</label>
+            <input type="file" id="firmwareFile" accept=".bin">
+        </div>
+
+        <!-- 2. ตั้งค่า Address -->
+        <div class="form-group">
+            <label for="flashAddress">2. ตำแหน่ง Flash Address (เช่น 0x1000 หรือ 0x0):</label>
+            <input type="text" id="flashAddress" value="0x1000">
+        </div>
+
+        <!-- 3. ปุ่มเชื่อมต่อและแฟลช -->
+        <button id="flashBtn">เชื่อมต่อและเริ่มแฟลชเฟิร์มแวร์</button>
+    </div>
+
+    <!-- ส่วนแสดงสถานะ Log -->
+    <h3>สถานะการทำงาน:</h3>
+    <div id="statusLog">ระบบพร้อมทำงาน...รอการเชื่อมต่อ</div>
+
+    <!-- โหลดไลบรารี esptool-js ผ่าน CDN แบบ Bundle -->
+    <script src="https://unpkg.com"></script>
+    <script>
+        // ดึงคลาสที่จำเป็นออกมาจาก Bundle ของ esptool-js
+        const { ESPLoader, Transport } = window.esptooljs;
+
+        const firmwareFileInput = document.getElementById('firmwareFile');
+        const flashAddressInput = document.getElementById('flashAddress');
+        const flashBtn = document.getElementById('flashBtn');
+        const statusLog = document.getElementById('statusLog');
+
+        // ฟังก์ชันสำหรับพิมพ์ข้อความแจ้งเตือนบนหน้าจอ
+        function log(message) {
+            statusLog.innerText += '\n' + message;
+            statusLog.scrollTop = statusLog.scrollHeight; // เลื่อนหน้าจอลงล่างสุดอัตโนมัติ
+        }
+
+        function clearLog() {
+            statusLog.innerText = '';
+        }
+
+        // เหตุการณ์เมื่อคลิกปุ่มแฟลช
+        flashBtn.addEventListener('click', async () => {
+            // ตรวจสอบว่าเลือกไฟล์หรือยัง
+            if (firmwareFileInput.files.length === 0) {
+                alert('กรุณาเลือกไฟล์เฟิร์มแวร์ (.bin) ก่อนครับ');
+                return;
+            }
+
+            flashBtn.disabled = true;
+            clearLog();
+            log('🔌 กำลังขอสิทธิ์เข้าถึงพอร์ต USB...');
+
+            let transport;
+            try {
+                // 1. ขอสิทธิ์เข้าถึง Serial Port จากเบราว์เซอร์
+                const port = await navigator.serial.requestPort();
+                transport = new Transport(port, true);
+                
+                // 2. สร้างออปชันสำหรับควบคุมและแสดงผล log
+                const loaderOptions = {
+                    transport: transport,
+                    baudrate: 115200,
+                    terminal: {
+                        clean: () => clearLog(),
+                        writeLine: (data) => log(data),
+                        write: (data) => log(data)
+                    }
+                };
+
+                // 3. เริ่มต้น ESPLoader และทำการเชื่อมต่อเพื่อเช็กตัวชิป
+                const esploader = new ESPLoader(loaderOptions);
+                log('⏳ กำลังเชื่อมต่อกับบอร์ด (Connecting...)');
+                const chipName = await esploader.main();
+                log(`✅ เชื่อมต่อสำเร็จ! ตรวจพบชิป: ${chipName}`);
+
+                // 4. อ่านไฟล์ข้อมูลไบนารีจากอินพุต
+                log('📁 กำลังอ่านไฟล์เฟิร์มแวร์...');
+                const file = firmwareFileInput.files[0];
+                const buffer = await file.arrayBuffer();
+                const firmwareData = new Uint8Array(buffer);
+
+                // แปลงค่า Address จาก String (เช่น 0x1000) ให้เป็นตัวเลข
+                const addressStr = flashAddressInput.value.trim();
+                const address = parseInt(addressStr, 16);
+
+                if (isNaN(address)) {
+                    throw new Error('รูปแบบของ Flash Address ไม่ถูกต้อง (ต้องเป็นฐานสิบหก เช่น 0x1000)');
+                }
+
+                // 5. ตั้งค่าการแฟลช
+                const flashOptions = {
+                    fileArray: [{ data: firmwareData, address: address }],
+                    flashMode: 'dio',
+                    flashFreq: '40m',
+                    flashSize: '4MB',
+                    eraseAll: false,
+                    compress: true,
+                    reportProgress: (fileIndex, written, total) => {
+                        const percent = ((written / total) * 100).toFixed(1);
+                        log(`⏳ กำลังเขียน: ${percent}% (${written}/${total} bytes)`);
+                    }
+                };
+
+                // 6. สั่งเริ่มเขียนแฟลชลงบอร์ด
+                log('🚀 กำลังเริ่มแฟลชเฟิร์มแวร์ลงบอร์ด...');
+                await esploader.writeFlash(flashOptions);
+                log('🎉 แฟลชเฟิร์มแวร์เรียบร้อยแล้ว!');
+
+                // 7. รีเซ็ตบอร์ดเพื่อให้โปรเจกต์เริ่มทำงานใหม่
+                log('🔄 กำลังรีเซ็ตบอร์ด (Hard Reset)...');
+                await esploader.after('hard_reset');
+                log('✨ เสร็จสิ้นกระบวนการทั้งหมด');
+
+            } catch (error) {
+                console.error(error);
+                log(`❌ เกิดข้อผิดพลาด: ${error.message}`);
+            } finally {
+                // ตัดการเชื่อมต่อและคืนสถานะปุ่ม
+                if (transport) {
+                    await transport.disconnect();
+                }
+                flashBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
